@@ -1,0 +1,3 @@
+import numpy as np
+distance_mat = np.loadtxt('Distance matrix of Zachary.txt')
+print(distance_mat)
