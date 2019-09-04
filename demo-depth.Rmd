@@ -1,0 +1,246 @@
+---
+title: "Network depth: demo"
+author: "Giulia Bertagnolli"
+output:
+  html_document:
+    theme: flatly
+    fig_caption: true
+    fig_width: 16
+    fig_height: 9
+    fig_align: 'center'
+    code_folding: hide
+---
+
+
+```{r load-libs, echo=TRUE}
+rm(list = ls())
+library(igraph)
+igraph_options(vertex.frame.color = "lightgray", vertex.frame.size = 3,
+               vertex.label.color = "white")
+library(igraphdata)
+library(networkDepth)
+library(smacof)
+library(tidyverse)
+# or load just some libraries included in tidyverse
+# library(ggplot2)
+# library(dplyr)
+# library(tible)
+```
+
+For this very small demo, we are going to use Zachary's Karate Club network, which can loaded from the `igraphdata` package.
+
+```{r load-network, echo=TRUE}
+data(karate)
+N <- gorder(karate)               # number of nodes
+```
+
+```{r setup-colours, echo=FALSE}
+# colours
+#install.packages("Polychrome")
+node_cols <- Polychrome::palette36.colors(N)
+# or just use
+#library(colorRamps)
+#library(RColorBrewer)
+# node_cols <- colorRampPalette(brewer.pal(n = 8, name = "Accent"))(N)
+names(node_cols) <- V(karate)$name
+```
+
+## Network Embedding
+
+The first step needed to compute the network depth is to embed the network.
+Since the code for the diffusion distance has not been released yet (but it will be by this year), we use the shortest-path distance.
+
+```{r distances, echo=TRUE}
+D <- distances(karate)
+```
+
+We want the embedding to be metric-preserving, so we use multidimensional scaling (MDS). The MDS problem can be solved analytically (solution implemented in `cmdscale`) or through an iterative optimisation (majourisation) technique (e.g. `mds` of the `smacof` package).
+
+Both functions have non-trivial assumptions. Check them before running the code on your networks.
+
+Here we show three types of embedding
+
+* classical mds `cmdscale`
+* metric mds solved by majorisation algorithm (stress minimisation)
+* non-metric mds solved by majorisation algorithm (used in the paper for sp-distance embeddings)
+
+```{r embedding, echo=TRUE}
+emb_analytic <- cmdscale(D, k = N - 1, eig = T)
+dims <- 2:(N - 1)
+emb_majoriz <- lapply(dims, function(p) mds(D, ndim = p))
+names(emb_majoriz) <- dims
+emb_nonmetric <- lapply(dims, function(p) mds(D, ndim = p, type = "ordinal"))
+names(emb_nonmetric) <- dims
+```
+
+### Evaluation of the goodness-of-fit of the embeddings.
+
+This step is purely statistical, here we are going to see just two functions for the evaluation of the quality of the embeddings, but further work has to be done for a proper evaluation. References can be found in the
+[SMACOF paper](https://www.jstatsoft.org/article/view/v031i03) and in [Cox, T. F., & Cox, M. A. (2000). _Multidimensional scaling_. Chapman and hall/CRC.].
+
+Scree plot for metric embeddings, on the x-axis there is the embedding dimension $p$, while on the y-axis we plot Kruskal's stress-1.
+
+
+```{r eval-embedding-a, echo=TRUE}
+# stress of classical mds embedding
+m <- ncol(emb_analytic$points)
+stress_a <- sapply(2:m, function(p) {
+  stress0(as.dist(D), emb_analytic$points[, 1:p], type = "ratio")
+})
+plot(x = 2:(length(stress_a)+1), stress_a, type = "l",
+  xlab = "dimension, p", ylab = "Kruskal's stress-1")
+```
+
+For the output of `cmdscale` quality can be also measured through the proportion of variation explained by using only $p$ dimensions, i.e.
+\begin{equation}
+S_{\lambda}(p) = \frac{\sum_{i=1}^p \lambda_i}{\sum_{i=1}^{n-1} |\lambda_i|}
+\end{equation}
+but statistical elbows are even more rare in this kind of plots.
+
+```{r eval-embedding-a-eigenvalues, echo=TRUE}
+# stress of classical mds embedding
+plot((cumsum(emb_analytic$eig>0) / sum(emb_analytic$eig > 0))[1:21],
+     type = "l", xlab = "dimension, p", ylab = "explained variation")
+```
+
+#### Scree plot for metric embeddings.
+
+```{r eval-embedding-m, echo=TRUE}
+# stress of smacof metric embedding
+stress_m <- sapply(emb_majoriz, function(x) x$stress)
+plot(x = 2:(length(stress_m)+1), stress_m, type = "l",
+  xlab = "dimension, p", ylab = "Kruskal's stress-1")
+```
+
+#### Scree plot for non-metric embeddings.
+
+```{r eval-embedding-nm, echo=TRUE}
+# stress of smacof non-metric embedding
+stress_nm <- sapply(emb_nonmetric, function(x) x$stress)
+plot(x = 2:(length(stress_nm)+1), stress_nm, type = "l",
+  xlab = "dimension, p", ylab = "Kruskal's stress-1")
+```
+
+A statistical elbow can be seen (though not super clear) at $p=7$, every $p \in {5, \dots, 10}$ could be equally good. Look at the depth patterns or integrate over the (whole or part of) space parameter.
+
+## Network depth
+
+Now it's time to use the `networkDepth` package, which contains two functions `PTDepthC`, to compute the depth of a single point w.r.t a cloud of points and `PTDSpaceC`, to compute the depth space of a cloud of point, i.e. the depth of each point in the cloud w.r.t. the cloud itself. The latter is the only one used for the evaluation of the network depht.
+
+The code is not ready for release, there might be errors.
+For this reason I usually build a wrapper around the PTD.
+
+```{r network-depth-wrapper, echo=TRUE}
+# simple wrapper, allows a smart management of errors and warnings
+network_depth <- function(emb) {
+  tryCatch(PTDSpaceC(emb), error = function(e){return(NULL)})
+}
+```
+
+```{r network-depth, echo=TRUE}
+# simple wrapper, allows a smart management of errors and warnings
+depth_a <- sapply(2:m, function(p) network_depth(emb_analytic$points[, 1:p]))
+depth_m <- sapply(emb_majoriz, function(x) network_depth(x$conf))
+depth_m <- depth_m[-which(sapply(depth_m, is.null))]
+depth_nm <- sapply(emb_nonmetric, function(x) network_depth(x$conf))
+depth_nm <- depth_nm[-which(sapply(depth_nm, is.null))]
+```
+
+#### Depth patterns in shortest-path embedding spaces.
+
+```{r plot-depth-a, echo=TRUE, fig.align='center'}
+colnames(depth_a) <- 2:m
+df <- depth_a %>%
+        as_tibble() %>%
+        add_column(node = rownames(depth_a)) %>%
+        gather(p, value, -node) %>%
+        mutate(
+          p = as.integer(p)
+        )
+df_top <- df %>%
+        group_by(p) %>%
+        filter(value >= quantile(value, probs = .95), p < 15)
+sel_names <- df_top %>% distinct(node)
+df_sub <- df %>% filter(node %in% sel_names$node)
+p1 <- ggplot(df, aes(x = p, y = value)) +
+        geom_point(aes(group = node), color = "lightgray") +
+        geom_line(size = 0.5, aes(group = node), color = "lightgray") +
+        geom_point(data = df_sub, aes(x = p, y = value, color = node)) +
+        geom_line(data = df_sub,
+                  aes(x = p, y = value, color = node), size = 2) +
+        scale_colour_manual(values = node_cols) +
+        theme_minimal()
+p1
+```
+
+```{r plot-depth-m, echo=TRUE, fig.align='center'}
+df_m <- do.call(cbind, depth_m)
+df <- df_m %>%
+        as_tibble() %>%
+        add_column(node = rownames(df_m)) %>%
+        gather(p, value, -node) %>%
+        mutate(
+          p = as.integer(p)
+        )
+df_top <- df %>%
+        group_by(p) %>%
+        filter(value >= quantile(value, probs = .95), p < 15)
+sel_names <- df_top %>% distinct(node)
+df_sub <- df %>% filter(node %in% sel_names$node)
+p2 <- ggplot(df, aes(x = p, y = value)) +
+        geom_point(aes(group = node), color = "lightgray") +
+        geom_line(size = 0.5, aes(group = node), color = "lightgray") +
+        geom_point(data = df_sub, aes(x = p, y = value, color = node)) +
+        geom_line(data = df_sub,
+                  aes(x = p, y = value, color = node), size = 2) +
+        scale_colour_manual(values = node_cols) +
+        theme_minimal()
+p2
+```
+
+```{r plot-depth-nm, echo=TRUE, fig.align='center'}
+df_nm <- do.call(cbind, depth_nm)
+df <- df_nm %>%
+        as_tibble() %>%
+        add_column(node = rownames(df_nm)) %>%
+        gather(p, value, -node) %>%
+        mutate(
+          p = as.integer(p)
+        )
+df_top <- df %>%
+        group_by(p) %>%
+        filter(value >= quantile(value, probs = .95), p < 15)
+sel_names <- df_top %>% distinct(node)
+df_sub <- df %>% filter(node %in% sel_names$node)
+p3 <- ggplot(df, aes(x = p, y = value)) +
+        geom_point(aes(group = node), color = "lightgray") +
+        geom_line(size = 0.5, aes(group = node), color = "lightgray") +
+        geom_point(data = df_sub, aes(x = p, y = value, color = node)) +
+        geom_line(data = df_sub,
+                  aes(x = p, y = value, color = node), size = 2) +
+        scale_colour_manual(values = node_cols) +
+        theme_minimal()
+p3
+```
+
+Refer to the [paper on arXiv](https://arxiv.org/abs/1904.05060) for further details on the analysis.
+Please, cite the paper if you use the code.
+
+```{r network-plot, echo=TRUE}
+# setup
+avg_depth <- rowMeans(df_nm)
+probs <- c(1, .99, .975, .95, .925, .9, .75, .5, .25, 0)
+qntls <- quantile(avg_depth, probs = probs)
+binned <- cut(avg_depth, breaks = qntls, include.lowest = T)
+depth_palette <- brewer.pal(n = length(levels(binned)), name = "GnBu")
+deepest_names <- V(karate)$name
+deepest_names[avg_depth < qntls[7]] <- NA
+plot(karate, vertex.color = depth_palette[as.numeric(binned)],
+  vertex.label = deepest_names)
+```
+
+## Final considerations
+
+* Complexity: the embedding step accounts for the largest part of the computational cost.
+* The network depth w.r.t. the shortest-path distance provides information compatible with closeness centrality (real novelty concerns the depth w.r.t. the diffusion distance).
+* The network depth can be computed w.r.t. other metrics on network (or even dissimilarity measure among observations), considerations on the meaning of the resulting centrality measure have to be done (similarly to the ones in the paper).
